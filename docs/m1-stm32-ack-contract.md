@@ -2,6 +2,8 @@
 
 狀態：只讀診斷 ACK 已實作；運轉命令仍不支援。尚未連到 C2 WebSocket 或實機驗證。
 
+此狀態僅指 M1D1 診斷版。獨立 M1M1 運動版與 C2 控制鏈另見 [M1 Remote Control](m1-remote-control.md)。
+
 ## 既有上位機實際會確認什麼
 
 | 操作 | newarchitecture 現況 | M1 診斷版本回覆 |

@@ -1,4 +1,4 @@
-param([string]$BuildDirectory = "build/diagnostics")
+param([string]$BuildDirectory = "build/diagnostics", [switch]$Motion)
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $cmakeCommand = Get-Command cmake -ErrorAction SilentlyContinue
@@ -27,13 +27,15 @@ else {
 }
 if ([IO.Path]::IsPathRooted($BuildDirectory)) { $outputDirectory = $BuildDirectory }
 else { $outputDirectory = Join-Path $projectRoot $BuildDirectory }
-& $cmakeExe -S $projectRoot -B $outputDirectory -G Ninja "-DCMAKE_MAKE_PROGRAM=$ninjaExe" "-DCMAKE_TOOLCHAIN_FILE=$projectRoot/cmake/arm-none-eabi.cmake"
+if ($Motion) { $motionOption = "ON"; $imageName = "m1_motion" }
+else { $motionOption = "OFF"; $imageName = "m1_diagnostics" }
+& $cmakeExe -S $projectRoot -B $outputDirectory -G Ninja "-DCMAKE_MAKE_PROGRAM=$ninjaExe" "-DCMAKE_TOOLCHAIN_FILE=$projectRoot/cmake/arm-none-eabi.cmake" "-DM1_MOTION_APPLICATION=$motionOption"
 if ($LASTEXITCODE -ne 0) { throw "Firmware configure failed." }
 & $cmakeExe --build $outputDirectory
 if ($LASTEXITCODE -ne 0) { throw "Firmware build failed." }
-$symbols = & (Join-Path $env:ARM_GCC_BIN "arm-none-eabi-nm.exe") (Join-Path $outputDirectory "m1_diagnostics.elf")
+$symbols = & (Join-Path $env:ARM_GCC_BIN "arm-none-eabi-nm.exe") (Join-Path $outputDirectory "$imageName.elf")
 if ($LASTEXITCODE -ne 0) { throw "Could not inspect firmware symbols." }
-if ($symbols | Select-String '\b(m1_sdo_write|m1_nmt|m1_sync|m1_rpdo[123])$') {
+if (-not $Motion -and ($symbols | Select-String '\b(m1_sdo_write|m1_nmt|m1_sync|m1_rpdo[123])$')) {
     throw "A write/motion codec was unexpectedly linked into the read-only diagnostic image."
 }
-Write-Output "Read-only diagnostic ELF, HEX and BIN built in $outputDirectory"
+Write-Output "$imageName ELF, HEX and BIN built in $outputDirectory"

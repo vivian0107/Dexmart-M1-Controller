@@ -1,5 +1,12 @@
 # M1 CANopen / NUCLEO-G474RE
 
+**C2 remote-control motion application is now implemented separately.** See
+[the control chain, commissioning settings and remaining deployment gates](docs/m1-remote-control.md).
+Build it with `tools/build_diagnostics.ps1 -Motion -BuildDirectory build/motion`.
+It is passive at boot and rejects activation until explicitly commissioned.
+The read-only application below remains the default build; its M1D1 protocol is
+separate from the motion application's M1M1 protocol. No hardware was flashed.
+
 The selected motor is the user-specified TECO DTSX06401C4NT3D01, DC48V 400W,
 maximum **4000 motor rpm**. This is not a default motion command or wheel rpm.
 
@@ -61,15 +68,16 @@ encoding is not proof of the actual configuration. `M1_VelocityScale.verified`
 may only be set after confirming settings and measured direction/speed.
 No function automatically changes factors, EEPROM, polarity or motor parameters.
 
-## Remaining runtime work
+## Diagnostic build scope
 
 Read-only SDO scheduling, segmented identity strings, timestamp/freshness,
 CAN error/EMCY/heartbeat health and a diagnostic console are implemented.
-Remaining motion work includes verified startup admission, the both-wheel
-enable/stop state machine, independent motion-command watchdog, drive-side
-communication loss behavior, and the versioned AGX/STM32 motion serial link.
-The AGX driver must preserve the existing locomotion SI interface and motion
-ownership. Do not report CAN submission as physical standstill.
+The separate motion application implements startup admission, both-wheel
+enable/stop confirmation, a 500 ms nonzero-command watchdog and the versioned
+AGX/STM32 serial link. The newarchitecture M1 driver preserves locomotion SI
+units and manual ownership. Drive-side loss-of-communication / independent
+power-removal protection and the actual hardware calibration still require
+commissioning. Do not report CAN submission as physical standstill.
 
 The supplied nominal geometry is wheel diameter **440 mm**, left/right wheel
 center distance **739 mm**, and reduction **10:1** (motor turns per wheel turn).
