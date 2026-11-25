@@ -1,0 +1,26 @@
+# Local builds and generated firmware outputs
+/build/
+/Debug/
+/Release/
+**/Obj/
+**/Exe/
+**/List/
+*.o
+*.elf
+*.hex
+*.bin
+*.map
+*.log
+
+# IAR user/session state; keep project/workspace definitions
+/EWARM/settings/
+*.dep
+*.ewt
+
+# Local editor and OS metadata
+/.vscode/
+/.idea/
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
