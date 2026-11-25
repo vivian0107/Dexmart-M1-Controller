@@ -21,7 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "m1_diag_board.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -119,10 +119,10 @@ int main(void)
 
   /* USER CODE BEGIN BSP */
 
-  /* -- Sample board code to send message over COM1 port ---- */
-  printf("Welcome to STM32 world !\n\r");
-
-  /* -- Sample board code to switch on led ---- */
+  if (M1_DiagBoard_Init(&hfdcan1, &hcom_uart[COM1]) != HAL_OK)
+  {
+    Error_Handler();
+  }
   BSP_LED_On(LED_GREEN);
 
   /* USER CODE END BSP */
@@ -131,6 +131,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    M1_DiagBoard_Poll();
 
     /* -- Sample board code for User push-button in interrupt mode ---- */
     if (BspButtonState == BUTTON_PRESSED)
@@ -225,7 +226,7 @@ static void MX_FDCAN1_Init(void)
   hfdcan1.Init.DataSyncJumpWidth = 1;
   hfdcan1.Init.DataTimeSeg1 = 1;
   hfdcan1.Init.DataTimeSeg2 = 1;
-  hfdcan1.Init.StdFiltersNbr = 1;
+  hfdcan1.Init.StdFiltersNbr = 3;
   hfdcan1.Init.ExtFiltersNbr = 0;
   hfdcan1.Init.TxFifoQueueMode = FDCAN_TX_FIFO_OPERATION;
   if (HAL_FDCAN_Init(&hfdcan1) != HAL_OK)

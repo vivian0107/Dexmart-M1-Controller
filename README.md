@@ -6,6 +6,13 @@ maximum **4000 motor rpm**. This is not a default motion command or wheel rpm.
 See the [AGX / STM32 integration plan](docs/stm32-differential-ugv-integration.md)
 for the architecture, vehicle geometry, protocol choices and remaining work.
 
+**The application now runs read-only diagnostics.** See the
+[build, flashing, console and C2 health guide](docs/read-only-diagnostics.md).
+Power-on is passive; `WATCH ON` starts polling and `PROBE` reads identity/config.
+There are no activation, motor target, parameter write, NMT or SYNC commands.
+The AGX monitor emits fresh per-drive health plus a normal/error UI mapping;
+the existing C2 WebSocket/driver integration is still separate work.
+
 `Core/Inc/m1_canopen.h` and `Core/Src/m1_canopen.c` implement a portable C99
 protocol codec based on the supplied DEXMART CANopen Rev.8 (2026-01-15):
 
@@ -16,10 +23,10 @@ protocol codec based on the supplied DEXMART CANopen Rev.8 (2026-01-15):
 - Differential kinematics with independent wheel radii, gear ratios and signs;
   proportional saturation retains turning curvature.
 
-This is a **codec and kinematics library**, not a finished motion controller.
-It is deliberately not called from `main.c`: no new CAN traffic or activation
-is enabled. Include the `.c` source in the target project when the runtime is
-implemented; the current generated EWARM application is unchanged.
+The codec/kinematics library is accompanied by `m1_diagnostics.c` (portable
+read-only scheduler/health logic) and `m1_diag_board.c` (G474RE HAL/USB VCP binding).
+`main.c` calls the diagnostic runtime. Both the new GCC build and EWARM project
+include its sources. This is not a finished motion controller.
 
 ## Protocol profile to verify before motion
 
@@ -52,10 +59,11 @@ No function automatically changes factors, EEPROM, polarity or motor parameters.
 
 ## Remaining runtime work
 
-Implement and test the SDO transaction scheduler, segmented identity strings,
-timestamp/freshness handling, startup readback gates, both-wheel enable/stop
-state machine, CAN error/EMCY/heartbeat handling, independent command watchdog,
-drive-side communication loss behavior, and the versioned AGX/STM32 serial link.
+Read-only SDO scheduling, segmented identity strings, timestamp/freshness,
+CAN error/EMCY/heartbeat health and a diagnostic console are implemented.
+Remaining motion work includes verified startup admission, the both-wheel
+enable/stop state machine, independent motion-command watchdog, drive-side
+communication loss behavior, and the versioned AGX/STM32 motion serial link.
 The AGX driver must preserve the existing locomotion SI interface and motion
 ownership. Do not report CAN submission as physical standstill.
 
@@ -81,3 +89,12 @@ responses, incompatible mappings, statusword masks, verified units, maximum rpm,
 geometry errors, both turning directions, installation signs and joint saturation.
 Tests include both synthetic edge cases and the supplied vehicle geometry.
 No test marks the physical vehicle as calibrated or enables the application.
+
+For the complete diagnostic image on Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/build_diagnostics.ps1
+```
+
+This produces ELF/HEX/BIN in `build/diagnostics`. No flashing is performed.
+The GCC build is verified; hardware tests and an IAR build remain outstanding.

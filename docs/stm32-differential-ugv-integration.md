@@ -1,7 +1,8 @@
 # M1 + 東元 400W 差速 UGV 整合
 
-更新日期：2026-11-25。狀態：已完成 M1 協定編解碼與差速函式、host 測試及 Cortex-M4 編譯。
-AGX driver、STM32 運轉狀態機、串列協定及實機驗證尚未完成，現有 `main.c` 未接入新函式。
+更新日期：2026-11-25。狀態：已完成協定/差速核心、只讀 SDO 診斷與健康回報，並接入 `main.c`。
+已有可建置的 GCC 診斷 ELF/HEX/BIN 與 AGX JSON 監看工具；locomotion driver、運轉狀態機、
+實機驗證及 C2 WebSocket 接線尚未完成。詳見 [只讀診斷操作](read-only-diagnostics.md)。
 
 ## 硬體基線
 
@@ -145,8 +146,11 @@ PDF p.137 明定 `60FF/606C` 為使用者定義速度單位。p.109-113 描述 F
 - `README.md`：編譯方式、協定前提與待整合項目。
 
 native CTest、AddressSanitizer/UndefinedBehaviorSanitizer 與 Cortex-M4 GCC 編譯已驗證。
-這些是 codec 函式，不會自行送 CAN 或激磁；raw PDO 組包函式本身不是速度上限或安全狀態機。
-目前尚未加入 EWARM target 或 `main.c` 的執行流程，也未燒錄、試轉或進行硬體在環測試。
+codec 函式本身不會送 CAN；新增的只讀診斷 runtime 可由 console 啟動 SDO upload，
+可持續回報左右驅動器的健康、fault/warning、失聯、模式及資料新鮮度。
+已加入 EWARM target 與 `main.c`，另提供 GCC 完整建置及只讀 image 檢查；
+尚未燒錄、試轉、驗證 IAR build 或進行硬體在環測試。
+`motion_allowed` 在此診斷版本固定為 0，raw PDO 組包函式仍不替代運轉授權與安全狀態機。
 
 ## 協定與故障契約
 
