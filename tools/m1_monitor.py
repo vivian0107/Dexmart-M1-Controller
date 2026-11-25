@@ -9,6 +9,79 @@ import json
 import re
 import sys
 import time
+import uuid
+
+
+class CommandSession:
+    """One correlated request at a time; a serial write is never an ACK."""
+    def __init__(self, nodes=(1, 2), session_id=None):
+        self.queue = ["INFO", f"NODES {nodes[0]} {nodes[1]}", "WATCH ON", "PROBE"]
+        self.session_id = session_id or uuid.uuid4().hex[:12]
+        self.sequence = 0
+        self.pending = None
+        self.error = None
+        self.verified = False
+        self.probe_result = None
+
+    def next_line(self, now):
+        if self.pending and now >= self.pending["deadline"]:
+            self.error = f"ack_timeout_{self.pending['verb'].lower()}"
+            self.verified = False
+            self.pending = None
+            self.queue.clear()
+        if self.pending or self.error or not self.queue:
+            return None
+        command = self.queue.pop(0)
+        self.sequence += 1
+        request_id = f"{self.session_id}-{self.sequence}"
+        self.pending = dict(id=request_id, verb=command.split()[0], command=command,
+                            deadline=now + 1.5, accepted=False)
+        return f"REQ {request_id} {command}\n"
+
+    def accept(self, line, now):
+        if not self.pending or not line.startswith("M1D1 ACK ") or len(line) > 256:
+            return False
+        try:
+            fields = {}
+            for item in line.strip().split()[2:]:
+                key, value = item.split("=", 1)
+                if key in fields:
+                    return False
+                fields[key] = value
+            if set(fields) != {"id", "cmd", "status", "reason"}:
+                return False
+            if fields["id"] != self.pending["id"] or fields["cmd"] != self.pending["verb"]:
+                return False
+            if now >= self.pending["deadline"]:
+                self.next_line(now)  # Expire it before considering a late ACK.
+                return False
+            status, reason = fields["status"], fields["reason"]
+            if not re.fullmatch(r"[a-z_]+", reason):
+                return False
+            if status == "accepted":
+                if self.pending["verb"] != "PROBE" or reason != "pending" or self.pending["accepted"]:
+                    return False
+                self.pending["accepted"] = True
+                self.pending["deadline"] = now + 30
+                return True
+            if status not in {"complete", "failed", "rejected", "cancelled"}:
+                return False
+            if status != "complete":
+                self.error = f"{self.pending['verb'].lower()}_{status}_{reason}"
+                self.verified = False
+                self.queue.clear()
+            elif self.pending["verb"] == "PROBE":
+                if not self.pending["accepted"] or reason not in {"ok", "partial", "profile_mismatch"}:
+                    return False
+                self.probe_result = reason
+            elif reason != "ok":
+                return False
+            elif self.pending["command"] == "WATCH ON":
+                self.verified = True
+            self.pending = None
+            return True
+        except ValueError:
+            return False
 
 
 class HealthMonitor:
@@ -21,6 +94,8 @@ class HealthMonitor:
         self.stale_after = stale_after
         self.samples = {}
         self.disconnected = False
+        self.command_error = None
+        self.probe_result = None
 
     def accept(self, line, now):
         if line.startswith("M1D1 BOOT "):
@@ -97,11 +172,13 @@ class HealthMonitor:
         levels = {n["health"] for n in nodes}
         health = ("unhealthy" if "unhealthy" in levels else "unknown" if "unknown" in levels
                   else "impaired" if "impaired" in levels else "healthy")
+        if self.command_error and health != "unhealthy":
+            health = "unknown"
         evidence = {"healthy": "Healthy", "impaired": "Impaired", "unhealthy": "Unhealthy", "unknown": "Unknown"}[health]
         return dict(schema="m1-diagnostics-health/v1", health=health, evidence_level=evidence,
                     driver_status="normal" if health == "healthy" else "error",
                     drive_ready=all(n["drive_ready"] for n in nodes), motion_allowed=False,
-                    nodes=nodes)
+                    command_error=self.command_error, probe_result=self.probe_result, nodes=nodes)
 
 
 def main():
@@ -130,14 +207,21 @@ def main():
         with serial.Serial(args.port, 115200, timeout=0.1, write_timeout=1) as port:
             # Wait through startup printing before sending console commands.
             configure_at = time.monotonic() + 0.3
+            session = None
+            monitor.command_error = "handshake_pending"
             published_at = 0.0
             buffer = bytearray()
             discarding = False
             while True:
                 now = time.monotonic()
                 if configure_at is not None and now >= configure_at:
-                    port.write((f"NODES {args.nodes[0]} {args.nodes[1]}\nWATCH ON\nPROBE\n").encode("ascii"))
+                    session = CommandSession(args.nodes)
                     configure_at = None
+                if session is not None:
+                    request = session.next_line(now)
+                    if request is not None:
+                        port.write(request.encode("ascii"))
+                    monitor.command_error = session.error or (None if session.verified else "handshake_pending")
                 for byte in port.read(256):
                     if byte in (10, 13):
                         if not discarding and buffer:
@@ -145,8 +229,15 @@ def main():
                             if args.raw:
                                 print(line, file=sys.stderr, flush=True)
                             monitor.accept(line, time.monotonic())
+                            if session is not None:
+                                session.accept(line, time.monotonic())
+                                monitor.command_error = session.error or (None if session.verified else "handshake_pending")
+                                monitor.probe_result = session.probe_result
                             if line.startswith("M1D1 BOOT "):
                                 configure_at = time.monotonic() + 0.3
+                                session = None
+                                monitor.command_error = "handshake_pending"
+                                monitor.probe_result = None
                         buffer.clear()
                         discarding = False
                     elif not discarding:

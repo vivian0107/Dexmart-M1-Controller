@@ -107,13 +107,34 @@ python3 tools/m1_monitor.py --port /dev/ttyACM0 --nodes 1 2 --raw
 ```
 
 Windows 可用 `python tools/m1_monitor.py --port COM7 --nodes 1 2 --raw`，換成實際 COM 號。
-程式自動送 `NODES`、`WATCH ON`、`PROBE`；stdout 是每 500 ms 一筆 JSON，raw 資料送 stderr。
+程式使用帶唯一 ID 的 `REQ`，依序確認 `INFO`、`NODES`、`WATCH ON`、`PROBE`；
+不只依據 serial 寫入成功判定配置完成。stdout 是每 500 ms 一筆 JSON，raw 資料送 stderr。
 不要讓終端機、監看工具和未來 driver 同時占用這個 serial port。
 
 JSON schema 為 `m1-diagnostics-health/v1`，含兩顆 node 明細、aggregate health、
 `evidence_level`、`driver_status`、`drive_ready` 與固定 false 的 `motion_allowed`。
 若任一顆 unhealthy，aggregate 為 Unhealthy；任一必要資料未知時不會把整車顯示為正常。
 serial 沒有新進度超過 1.5 秒、重複序號、MCU reboot、USB 斷線，都不能保留舊的正常狀態。
+ACK 逾時/拒絕會附上 `command_error`，掃描結果在 `probe_result`；不能用持續收到 HEALTH 來掩蓋命令未確認。
+
+## 命令執行確認
+
+```text
+REQ check-1 PING
+M1D1 ACK id=check-1 cmd=PING status=complete reason=ok
+
+REQ check-2 PROBE
+M1D1 ACK id=check-2 cmd=PROBE status=accepted reason=pending
+... READ / PROFILE ...
+M1D1 ACK id=check-2 cmd=PROBE status=complete reason=ok
+```
+
+一般診斷操作有終端 ACK；PROBE 先 accepted，再回 complete/failed/cancelled。
+部分讀取失敗時 reason=partial，PDO 不符時 reason=profile_mismatch；沒有成功讀取則 failed/no_valid_reads。
+未帶 REQ 的終端命令也會回 ACK，但 id=none，不適合上位機交易配對。
+這些回覆不等於物理動作完成：診斷版本收到 ACTIVATE/MOVE/停止/抱閘等運動操作會明確拒絕。
+HOLD/STOP_ID/ESTOP_ID 的負面 ACK 會保留舊 token，供 newarchitecture 立即辨識不相容。
+詳細規則與原有上位機契約見 [ACK 核對說明](m1-stm32-ack-contract.md)。
 
 ## C2 接法
 

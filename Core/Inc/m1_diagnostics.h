@@ -36,6 +36,9 @@ typedef struct {
     uint32_t announced_size;
     uint8_t text[M1_DIAG_TEXT_CAPACITY];
     uint8_t watching, probing, probe_slot, probe_entry, poll_cursor, transport_ok;
+    uint8_t pending_probe, probe_skipped;
+    uint16_t probe_ok, probe_failed;
+    char probe_id[33];
     char command[80];
     uint8_t command_length, discard_line;
 } M1_Diagnostics;

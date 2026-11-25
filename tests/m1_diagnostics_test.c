@@ -144,25 +144,71 @@ static uint32_t map_value(uint16_t index, uint8_t sub) {
 }
 static void test_profile_scan(void) {
     unsigned bad;
-    for(bad=0;bad<2;++bad) {
+    for(bad=0;bad<3;++bad) {
         Fixture *x=reset(); uint32_t now;
-        cmd(x,"PROBE");
+        cmd(x,"REQ scan-1 PROBE");
+        assert(strstr(x->log,"ACK id=scan-1 cmd=PROBE status=accepted reason=pending"));
+        cmd(x,"REQ other INFO");
         for(now=0;now<3000 && x->d.probing;now+=5) {
             m1_diag_tick(&x->d,now);
             if(x->d.pending) {
                 uint8_t size=x->d.expected_size?x->d.expected_size:2;
                 uint32_t value=map_value(x->d.object_index,x->d.object_sub);
                 M1_Frame f;
-                if(bad && x->d.object_index==0x1601 && x->d.object_sub==1) value=0x30510108;
+                if(bad==1 && x->d.object_index==0x1601 && x->d.object_sub==1) value=0x30510108;
                 f=reply(x,(uint8_t)(0x43|((4-size)<<2)),value);
+                if(bad==2 && x->d.object_index==0x608f && x->d.object_sub==1) f=reply(x,0x80,0x06020000);
                 m1_diag_receive(&x->d,&f,now);
             }
         }
         assert(!x->d.probing);
-        assert(strstr(x->log,bad?"PROFILE node=1 mapping=mismatch":"PROFILE node=1 mapping=match"));
+        assert(strstr(x->log,bad==1?"PROFILE node=1 mapping=mismatch":"PROFILE node=1 mapping=match"));
+        assert(strstr(x->log,bad==1?"ACK id=scan-1 cmd=PROBE status=complete reason=profile_mismatch":
+                             bad==2?"ACK id=scan-1 cmd=PROBE status=complete reason=partial":
+                                    "ACK id=scan-1 cmd=PROBE status=complete reason=ok"));
     }
 }
+static void test_command_acknowledgements(void) {
+    Fixture *x=reset();
+    cmd(x,"REQ p1 PING"); assert(strstr(x->log,"ACK id=p1 cmd=PING status=complete reason=ok"));
+    cmd(x,"REQ invalid$ PING"); assert(strstr(x->log,"ACK id=none cmd=REQ status=rejected reason=invalid_request"));
+    cmd(x,"REQ move-1 ACTIVATE");
+    assert(strstr(x->log,"ACK id=move-1 cmd=ACTIVATE status=rejected reason=read_only"));
+    cmd(x,"HOLD aabb"); assert(strstr(x->log,"ACK id=aabb cmd=HOLD status=rejected reason=read_only"));
+    cmd(x,"STOP_ID ccdd"); assert(strstr(x->log,"ACK id=ccdd cmd=STOP_ID status=rejected reason=read_only"));
+    cmd(x,"ESTOP_ID eeff"); assert(strstr(x->log,"ACK id=eeff cmd=ESTOP_ID status=rejected reason=read_only"));
+    assert(x->sends==0);
+    assert(!strstr(x->log,"APPLIED") && !strstr(x->log,"Drive is ready"));
+    cmd(x,"REQ scan PROBE"); cmd(x,"REQ again PROBE");
+    assert(strstr(x->log,"ACK id=again cmd=PROBE status=rejected reason=busy"));
+    cmd(x,"REQ c1 CANCEL");
+    assert(strstr(x->log,"ACK id=scan cmd=PROBE status=cancelled reason=requested"));
+    assert(strstr(x->log,"ACK id=c1 cmd=CANCEL status=complete reason=ok"));
+    x=reset(); cmd(x,"REQ offline PROBE");
+    for(unsigned now=0;now<1000;now+=10) m1_diag_tick(&x->d,now);
+    assert(strstr(x->log,"ACK id=offline cmd=PROBE status=failed reason=no_valid_reads"));
+    x=reset(); m1_diag_transport(&x->d,0); cmd(x,"REQ bad WATCH ON");
+    assert(strstr(x->log,"ACK id=bad cmd=WATCH status=failed reason=can_unavailable"));
+}
 int main(int argc, char **argv) {
+    if(argc==2 && !strcmp(argv[1],"--emit-ack")) {
+        Fixture *x=reset(); unsigned now;
+        cmd(x,"REQ link-1 INFO"); cmd(x,"REQ link-2 NODES 1 2");
+        cmd(x,"REQ link-3 WATCH ON"); cmd(x,"REQ link-4 PROBE");
+        for(now=0;now<6000 && x->d.probing;now+=10) {
+            m1_diag_tick(&x->d,now);
+            if(x->d.pending) {
+                uint8_t size=x->d.expected_size?x->d.expected_size:2;
+                uint32_t value=map_value(x->d.object_index,x->d.object_sub);
+                M1_Frame f;
+                if(x->d.object_index==0x6041) value=0x0221;
+                if(x->d.object_index==0x6061) value=3;
+                f=reply(x,(uint8_t)(0x43|((4-size)<<2)),value);
+                m1_diag_receive(&x->d,&f,now);
+            }
+        }
+        assert(!x->d.probing); puts(x->log); return 0;
+    }
     if(argc==2 && !strcmp(argv[1],"--emit-health")) {
         Fixture *x=reset();
         cmd(x,"WATCH ON"); run_poll(x,0,1000,0x0221,0);
@@ -174,6 +220,7 @@ int main(int argc, char **argv) {
     test_read_only_and_parser(); test_segmented_identity();
     test_timeout_abort_and_correlation(); test_live_health();
     test_profile_scan();
+    test_command_acknowledgements();
     puts("Read-only diagnostic SDO, console, segmentation and live health tests passed");
     return 0;
 }

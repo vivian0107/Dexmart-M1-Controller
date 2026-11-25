@@ -48,6 +48,11 @@ static uint32_t u32(const uint8_t *p) {
 static int due(uint32_t now, uint32_t deadline) { return now-deadline < 0x80000000u; }
 static int fresh(uint32_t now, uint32_t at) { return now-at <= M1_DIAG_FRESH_MS; }
 static void emit(M1_Diagnostics *d, const char *s) { if (d->emit) d->emit(d->user,s); }
+static void ack(M1_Diagnostics *d, const char *id, const char *verb, const char *status, const char *reason) {
+    char line[160];
+    snprintf(line,sizeof(line),"M1D1 ACK id=%s cmd=%s status=%s reason=%s",id,verb,status,reason);
+    emit(d,line);
+}
 static int whitelisted(uint16_t index, uint8_t sub) {
     size_t i;
     for(i=0;i<sizeof(objects)/sizeof(objects[0]);++i)
@@ -95,6 +100,8 @@ static void failure(M1_Diagnostics *d, const char *reason, uint32_t code) {
     char line[180];
     snprintf(line,sizeof(line),"M1D1 READ node=%u index=0x%04X sub=%u result=%s code=0x%08lX",
              d->nodes[d->slot].node,d->object_index,d->object_sub,reason,(unsigned long)code);
+    if(d->pending_probe) ++d->probe_failed;
+    d->pending_probe=0;
     emit(d,line); invalidate(d); d->pending=0; d->segment=0; d->quiet_until=d->now+20;
 }
 static void start_read(M1_Diagnostics *d, uint8_t slot, ReadObject o) {
@@ -136,6 +143,8 @@ static void numeric(M1_Diagnostics *d, uint32_t value, uint8_t size) {
     }
     snprintf(line,sizeof(line),"M1D1 READ node=%u index=0x%04X sub=%u result=ok size=%u value=0x%08lX",
              n->node,d->object_index,d->object_sub,size,(unsigned long)value);
+    if(d->pending_probe) ++d->probe_ok;
+    d->pending_probe=0;
     emit(d,line); d->pending=0; d->quiet_until=d->now+5;
 }
 static void identity(M1_Diagnostics *d) {
@@ -148,6 +157,8 @@ static void identity(M1_Diagnostics *d) {
     d->nodes[d->slot].retry_delayed=0;
     snprintf(line,sizeof(line),"M1D1 READ node=%u index=0x%04X sub=%u result=ok size=%u text_hex=%s",
              d->nodes[d->slot].node,d->object_index,d->object_sub,d->text_length,encoded);
+    if(d->pending_probe) ++d->probe_ok;
+    d->pending_probe=0;
     emit(d,line); d->pending=0; d->segment=0; d->quiet_until=d->now+5;
 }
 void m1_diag_receive(M1_Diagnostics *d, const M1_Frame *f, uint32_t now) {
@@ -281,8 +292,8 @@ void m1_diag_transport(M1_Diagnostics *d, int ok) {
 void m1_diag_init(M1_Diagnostics *d, M1_DiagSend tx, M1_DiagEmit log, void *user) {
     memset(d,0,sizeof(*d)); d->send=tx; d->emit=log; d->user=user;
     d->nodes[0].node=1; d->nodes[1].node=2;
-    emit(d,"M1D1 BOOT firmware=m1-diag-1 read_only=1 motion_allowed=0");
-    emit(d,"M1D1 INFO can_bps=1000000 uart_bps=115200 default_nodes=1,2 watch=off");
+    emit(d,"M1D1 BOOT firmware=m1-diag-2 read_only=1 motion_allowed=0 ack=1");
+    emit(d,"M1D1 INFO can_bps=1000000 uart_bps=115200 default_nodes=1,2 watch=off ack=1");
 }
 void m1_diag_tick(M1_Diagnostics *d, uint32_t now) {
     unsigned tries;
@@ -294,7 +305,7 @@ void m1_diag_tick(M1_Diagnostics *d, uint32_t now) {
             abort_upload(d); ++d->nodes[slot].timeouts;
             d->nodes[slot].retry_at=now+1000; d->nodes[slot].retry_delayed=1;
             failure(d,"timeout",0);
-            if(d->probing && d->probe_slot==slot) { ++d->probe_slot; d->probe_entry=0; }
+            if(d->probing && d->probe_slot==slot) { ++d->probe_slot; ++d->probe_skipped; d->probe_entry=0; }
         }
         return;
     }
@@ -305,15 +316,15 @@ void m1_diag_tick(M1_Diagnostics *d, uint32_t now) {
             uint8_t slot=(uint8_t)(cursor%2), field=(uint8_t)((cursor/2)%4);
             M1_DiagNode *n=&d->nodes[slot];
             if(n->retry_delayed && !due(now,n->retry_at)) continue;
-            d->poll_at=now; start_read(d,slot,poll_objects[field]); return;
+            d->poll_at=now; d->pending_probe=0; start_read(d,slot,poll_objects[field]); return;
         }
     }
     if(d->probing) {
         while(d->probe_slot<2) {
             M1_DiagNode *n=&d->nodes[d->probe_slot];
-            if(n->retry_delayed && !due(now,n->retry_at)) { ++d->probe_slot; d->probe_entry=0; continue; }
+            if(n->retry_delayed && !due(now,n->retry_at)) { ++d->probe_slot; ++d->probe_skipped; d->probe_entry=0; continue; }
             if(d->probe_entry<sizeof(objects)/sizeof(objects[0])) {
-                start_read(d,d->probe_slot,objects[d->probe_entry++]); return;
+                d->pending_probe=1; start_read(d,d->probe_slot,objects[d->probe_entry++]); return;
             }
             ++d->probe_slot; d->probe_entry=0;
         }
@@ -324,11 +335,21 @@ void m1_diag_tick(M1_Diagnostics *d, uint32_t now) {
                      d->nodes[tries].node,mapping_state(&d->nodes[tries]));
             emit(d,line);
         }
-        emit(d,"M1D1 PROBE result=complete means=scan_finished_not_motion_ready");
+        {
+            char line[160];
+            snprintf(line,sizeof(line),"M1D1 PROBE result=complete reads_ok=%u reads_failed=%u nodes_skipped=%u means=scan_finished_not_motion_ready",
+                     d->probe_ok,d->probe_failed,d->probe_skipped);
+            emit(d,line);
+            ack(d,d->probe_id,"PROBE",d->probe_ok?"complete":"failed",
+                !d->probe_ok?"no_valid_reads":(d->probe_failed || d->probe_skipped)?"partial":
+                (d->nodes[0].mapping_mismatch || d->nodes[1].mapping_mismatch)?"profile_mismatch":"ok");
+        }
     }
 }
 static void cancel(M1_Diagnostics *d) {
+    if(d->probing) ack(d,d->probe_id,"PROBE","cancelled","requested");
     abort_upload(d); d->pending=0; d->segment=0; d->watching=0; d->probing=0; d->quiet_until=d->now+250;
+    d->pending_probe=0;
 }
 static const char *skip_space(const char *p) { while(*p==' ' || *p=='\t') ++p; return p; }
 static int node_number(const char **p, uint8_t *out) {
@@ -339,29 +360,75 @@ static int node_number(const char **p, uint8_t *out) {
     if(!value) return 0;
     *out=(uint8_t)value; return 1;
 }
+static int request_id(const char *s, size_t size) {
+    size_t i;
+    if(!size || size>32 || (size==4 && !memcmp(s,"none",4))) return 0;
+    for(i=0;i<size;++i) {
+        char c=s[i];
+        if(!((c>='a' && c<='z') || (c>='A' && c<='Z') || (c>='0' && c<='9') || c=='_' || c=='-' || c=='.')) return 0;
+    }
+    return 1;
+}
 static void command(M1_Diagnostics *d, const char *s) {
+    char id[33]="none", verb[16];
+    const char *p;
+    size_t size;
+    int tagged=0;
+    if(!strncmp(s,"REQ ",4)) {
+        tagged=1; s=skip_space(s+4); p=s;
+        while(*p && *p!=' ' && *p!='\t') ++p;
+        size=(size_t)(p-s);
+        if(!request_id(s,size) || !*p) { ack(d,"none","REQ","rejected","invalid_request"); return; }
+        memcpy(id,s,size); id[size]=0; s=skip_space(p);
+    }
+    p=s; while(*p && *p!=' ' && *p!='\t') ++p;
+    size=(size_t)(p-s);
+    if(!size || size>=sizeof(verb)) { ack(d,id,"UNKNOWN","rejected","invalid_command"); return; }
+    memcpy(verb,s,size); verb[size]=0;
     if(!strcmp(s,"HELP")) {
-        emit(d,"M1D1 HELP commands=INFO,STATUS,PROBE,WATCH_ON,WATCH_OFF,NODES_a_b,CANCEL read_only=1");
+        emit(d,"M1D1 HELP commands=REQ_id_command,PING,INFO,STATUS,PROBE,WATCH_ON,WATCH_OFF,NODES_a_b,CANCEL read_only=1");
+        ack(d,id,verb,"complete","ok");
+    } else if(!strcmp(s,"PING")) {
+        ack(d,id,verb,"complete","ok");
     } else if(!strcmp(s,"INFO")) {
-        emit(d,"M1D1 INFO firmware=m1-diag-1 can_bps=1000000 uart_bps=115200 read_only=1 motion_allowed=0");
-    } else if(!strcmp(s,"STATUS")) report(d);
+        emit(d,"M1D1 INFO firmware=m1-diag-2 can_bps=1000000 uart_bps=115200 read_only=1 motion_allowed=0 ack=1");
+        ack(d,id,verb,"complete","ok");
+    } else if(!strcmp(s,"STATUS")) { report(d); ack(d,id,verb,"complete","ok"); }
     else if(!strcmp(s,"PROBE")) {
         unsigned i;
-        if(d->probing) { emit(d,"M1D1 ERROR reason=probe_busy"); return; }
+        if(d->probing) { ack(d,id,verb,"rejected","busy"); return; }
+        if(!d->transport_ok) { ack(d,id,verb,"failed","can_unavailable"); return; }
         for(i=0;i<2;++i) { d->nodes[i].mapping_seen=0; d->nodes[i].mapping_mismatch=0; }
         d->probe_slot=0; d->probe_entry=0; d->probing=1;
+        d->probe_ok=0; d->probe_failed=0; d->probe_skipped=0;
+        strcpy(d->probe_id,id);
         emit(d,"M1D1 PROBE result=started");
-    } else if(!strcmp(s,"WATCH ON")) { d->watching=1; emit(d,"M1D1 WATCH enabled=1"); }
-    else if(!strcmp(s,"WATCH OFF") || !strcmp(s,"CANCEL")) { cancel(d); emit(d,"M1D1 WATCH enabled=0"); }
+        ack(d,id,verb,"accepted","pending");
+    } else if(!strcmp(s,"WATCH ON")) {
+        if(!d->transport_ok) { ack(d,id,verb,"failed","can_unavailable"); return; }
+        d->watching=1; emit(d,"M1D1 WATCH enabled=1"); ack(d,id,verb,"complete","ok");
+    }
+    else if(!strcmp(s,"WATCH OFF") || !strcmp(s,"CANCEL")) {
+        cancel(d); emit(d,"M1D1 WATCH enabled=0"); ack(d,id,verb,"complete","ok");
+    }
     else if(!strncmp(s,"NODES ",6)) {
         const char *p=s+6;
         uint8_t a,b;
         if(!node_number(&p,&a) || (*p!=' ' && *p!='\t') || !node_number(&p,&b) || *skip_space(p) || a==b) {
-            emit(d,"M1D1 ERROR reason=nodes_require_two_distinct_ids_1_to_127"); return;
+            ack(d,id,verb,"rejected","invalid_nodes"); return;
         }
         cancel(d); memset(d->nodes,0,sizeof(d->nodes)); d->nodes[0].node=a; d->nodes[1].node=b;
-        emit(d,"M1D1 NODES result=changed_watch_disabled"); report(d);
-    } else emit(d,"M1D1 ERROR reason=unsupported_command_read_only");
+        emit(d,"M1D1 NODES result=changed_watch_disabled"); ack(d,id,verb,"complete","ok"); report(d);
+    } else {
+        /* Preserve the legacy stop token in a NEGATIVE reply, never APPLIED. */
+        if(!tagged && (!strcmp(verb,"HOLD") || !strcmp(verb,"STOP_ID") || !strcmp(verb,"ESTOP_ID"))) {
+            const char *token=skip_space(p), *end=token;
+            while(*end && *end!=' ' && *end!='\t') ++end;
+            size=(size_t)(end-token);
+            if(request_id(token,size) && !*skip_space(end)) { memcpy(id,token,size); id[size]=0; }
+        }
+        ack(d,id,verb,"rejected","read_only");
+    }
 }
 void m1_diag_discard_input(M1_Diagnostics *d) { d->command_length=0; d->discard_line=1; }
 void m1_diag_input(M1_Diagnostics *d, uint8_t byte) {

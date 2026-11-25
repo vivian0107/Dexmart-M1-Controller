@@ -12,6 +12,10 @@ Power-on is passive; `WATCH ON` starts polling and `PROBE` reads identity/config
 There are no activation, motor target, parameter write, NMT or SYNC commands.
 The AGX monitor emits fresh per-drive health plus a normal/error UI mapping;
 the existing C2 WebSocket/driver integration is still separate work.
+Diagnostic commands support correlated `REQ <id> <command>` ACKs. The AGX
+monitor verifies each configuration reply and asynchronous probe completion;
+missing/rejected replies cannot be masked by healthy telemetry. See the
+[newarchitecture ACK audit](docs/m1-stm32-ack-contract.md).
 
 `Core/Inc/m1_canopen.h` and `Core/Src/m1_canopen.c` implement a portable C99
 protocol codec based on the supplied DEXMART CANopen Rev.8 (2026-01-15):
